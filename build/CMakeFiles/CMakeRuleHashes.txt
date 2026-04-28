@@ -1,0 +1,2 @@
+# Hashes of file build rules.
+1469cd04c9e985aef016912abbbaca86 Couch1176_artefacts/JuceLibraryCode/JuceHeader.h
