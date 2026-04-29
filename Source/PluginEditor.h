@@ -35,9 +35,8 @@ private:
     void drawBackground      (juce::Graphics&) const;
     void drawVUMeterFace     (juce::Graphics&) const;
     void drawVUNeedle        (juce::Graphics&) const;
-    void drawKnobDialScale   (juce::Graphics&, float cx, float cy,
-                              float innerR, float outerR, float labelR,
-                              int   nTicks, bool large) const;
+    void drawLargeKnobScale  (juce::Graphics&, float cx, float cy) const;
+    void drawSmallKnobScale  (juce::Graphics&, float cx, float cy) const;
     void drawKnobLabels      (juce::Graphics&) const;
     void drawRatioButtons    (juce::Graphics&) const;
     void drawMeterModeButtons(juce::Graphics&) const;
@@ -73,37 +72,37 @@ private:
     int meterMode = 0;
 
     // ── Layout constants ──────────────────────────────────────────────────
-    static constexpr int PLUGIN_W = 700;
-    static constexpr int PLUGIN_H = 195;
+    static constexpr int PLUGIN_W = 920;
+    static constexpr int PLUGIN_H = 265;
 
-    // Large knobs
-    static constexpr int INP_X = 10,  INP_Y = 24, INP_W = 88, INP_H = 88;
-    static constexpr int OUT_X = 106, OUT_Y = 24, OUT_W = 88, OUT_H = 88;
+    // Large knobs — 25% bigger (110→138), centers at PLUGIN_H/2 = 132
+    static constexpr int INP_X = 48,  INP_Y = 63, INP_W = 138, INP_H = 138;
+    static constexpr int OUT_X = 235, OUT_Y = 63, OUT_W = 138, OUT_H = 138;
 
-    // Small knobs
-    static constexpr int ATK_X = 206, ATK_Y = 30, ATK_W = 72, ATK_H = 72;
-    static constexpr int REL_X = 284, REL_Y = 30, REL_W = 72, REL_H = 72;
+    // Small knobs — stacked, 35px above/below center (132), 8px gap between them
+    static constexpr int ATK_X = 422, ATK_Y = 66,  ATK_W = 62, ATK_H = 62;
+    static constexpr int REL_X = 422, REL_Y = 136, REL_W = 62, REL_H = 62;
 
-    // Ratio button column (btnIndex 0-3 = 20/12/8/4, 4 = ALL)
-    static constexpr int RB_X = 364, RB_W = 54, RB_H = 27;
-    static constexpr int RB_Y0 = 23,  RB_Y1 = 54,  RB_Y2 = 85, RB_Y3 = 116;
-    static constexpr int RB_Y_ALL = 148, RB_ALL_H = 18;
+    // Ratio button column
+    static constexpr int RB_X = 533, RB_W = 40, RB_H = 23;
+    static constexpr int RB_Y0 = 69,  RB_Y1 = 96,  RB_Y2 = 123, RB_Y3 = 150;
+    static constexpr int RB_Y_ALL = 181, RB_ALL_H = 15;
 
-    // VU meter face
-    static constexpr int   VM_X = 426, VM_Y = 5,  VM_W = 184, VM_H = 158;
-    static constexpr float VM_PX = VM_X + VM_W * 0.5f;   // pivot x = 518
-    static constexpr float VM_PY = VM_Y + VM_H - 4.f;    // pivot y = 159
+    // VU meter face  (sprite frames stay 184×158; display at 230×182)
+    static constexpr int   VM_X = 587, VM_Y = 38, VM_W = 230, VM_H = 182;
+    static constexpr float VM_PX = VM_X + VM_W * 0.5f;
+    static constexpr float VM_PY = VM_Y + VM_H - 4.f;
     static constexpr float NEEDLE_R    = 66.f;
     static constexpr float SCALE_R_OUT = 60.f;
     static constexpr float SCALE_R_IN  = 51.f;
     static constexpr float LABEL_R     = 42.f;
 
-    // Meter mode button column (GR / +8 / +4 / OFF)
-    static constexpr int MB_X = 618, MB_W = 54, MB_H = 27;
-    static constexpr int MB_Y0 = 23, MB_Y1 = 54, MB_Y2 = 85, MB_Y3 = 116;
+    // Meter mode button column
+    static constexpr int MB_X = 831, MB_W = 40, MB_H = 23;
+    static constexpr int MB_Y0 = 69, MB_Y1 = 96, MB_Y2 = 123, MB_Y3 = 150;
 
     // Bottom bar
-    static constexpr int BOT_Y = 168;
+    static constexpr int BOT_Y = 225;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Couch1176Editor)
 };

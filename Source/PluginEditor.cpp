@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include <BinaryData.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Colour palette  (1176 aesthetic: dark anodised panel, warm amber meter)
@@ -56,39 +57,41 @@ void Couch1176LookAndFeel::drawRotarySlider (juce::Graphics& g,
 {
     juce::ignoreUnused (slider);
 
-    const float cx  = x + w * 0.5f;
-    const float cy  = y + h * 0.5f;
-    const float rad = juce::jmin (w, h) * 0.5f - 4.f;
+    // Select image based on knob size (large knobs: INPUT/OUTPUT at 88px, small: ATK/REL at 72px)
+    const bool isLarge = (w >= 80);
 
-    // Chrome outer ring
-    g.setColour (Col::knobRing);
-    g.fillEllipse (cx - rad - 3.f, cy - rad - 3.f,
-                   (rad + 3.f) * 2.f, (rad + 3.f) * 2.f);
+    static const juce::Image largeImg = juce::ImageCache::getFromMemory (
+        BinaryData::_76large_png, BinaryData::_76large_pngSize);
+    static const juce::Image smallImg = juce::ImageCache::getFromMemory (
+        BinaryData::_76small_png, BinaryData::_76small_pngSize);
 
-    // Knob body gradient (top-left highlight)
-    juce::ColourGradient bodyGrad (Col::knobBody1, cx - rad * 0.4f, cy - rad * 0.5f,
-                                   Col::knobBody2, cx + rad * 0.5f, cy + rad * 0.6f, false);
-    g.setGradientFill (bodyGrad);
-    g.fillEllipse (cx - rad, cy - rad, rad * 2.f, rad * 2.f);
+    const juce::Image& img = isLarge ? largeImg : smallImg;
 
-    // Subtle top-left sheen
-    g.setColour (juce::Colour (0x1cffffff));
-    g.fillEllipse (cx - rad, cy - rad, rad * 2.f, rad * 2.f);
+    if (! img.isValid())
+        return;
 
-    // Pointer line (indicator mark)
-    const float angle = startAngle + sliderPos * (endAngle - startAngle);
-    // JUCE clock-face convention: tipX = cx + sin(angle)*len, tipY = cy - cos(angle)*len
-    const float pLen  = rad * 0.70f;
-    const float px    = cx + std::sin (angle) * pLen;
-    const float py    = cy - std::cos (angle) * pLen;
+    // Angle of the indicator mark in the source image (measured from 12-o'clock, CW positive)
+    // large: red indicator at -134.6° = -2.349 rad
+    // small: dark dot at    -133.0° = -2.321 rad
+    const float srcIndicatorAngle = isLarge ? -2.349f : -2.321f;
 
-    g.setColour (Col::cream);
-    g.drawLine (cx, cy, px, py, 2.5f);
+    // Current knob angle in JUCE clock-face space
+    const float currentAngle = startAngle + sliderPos * (endAngle - startAngle);
 
-    // Center cap
-    const float capR = rad * 0.12f;
-    g.setColour (Col::chromeDark);
-    g.fillEllipse (cx - capR, cy - capR, capR * 2.f, capR * 2.f);
+    // Rotation needed to move the indicator from its source position to currentAngle
+    const float rotation = currentAngle - srcIndicatorAngle;
+
+    const float imgW = (float) img.getWidth();
+    const float imgH = (float) img.getHeight();
+    const float cx   = x + w * 0.5f;
+    const float cy   = y + h * 0.5f;
+    const float scale = (float) juce::jmin (w, h) / imgW;
+
+    g.drawImageTransformed (img,
+        juce::AffineTransform::translation (-imgW * 0.5f, -imgH * 0.5f)
+            .scaled (scale)
+            .rotated (rotation)
+            .translated (cx, cy));
 }
 
 juce::Label* Couch1176LookAndFeel::createSliderTextBox (juce::Slider& s)
@@ -133,6 +136,23 @@ Couch1176Editor::Couch1176Editor (Couch1176Processor& p)
     outputAttach  = std::make_unique<SliderAttach> (p.apvts, "output",  outputSlider);
     attackAttach  = std::make_unique<SliderAttach> (p.apvts, "attack",  attackSlider);
     releaseAttach = std::make_unique<SliderAttach> (p.apvts, "release", releaseSlider);
+
+    // Custom tooltip text for attack/release — must be set AFTER SliderAttachment
+    attackSlider.textFromValueFunction = [] (double v)
+    {
+        const float norm   = (float) v * 0.01f;
+        const float timeUs = 0.0008f * std::pow (0.025f, norm) * 1e6f;
+        return juce::String (juce::roundToInt (timeUs)) + " \xc2\xb5s";
+    };
+
+    releaseSlider.textFromValueFunction = [] (double v)
+    {
+        const float norm  = (float) v * 0.01f;
+        const float timeS = 1.1f * std::pow (0.04545f, norm);
+        if (timeS >= 1.0f)
+            return juce::String (timeS, 2) + " s";
+        return juce::String (timeS * 1000.f, 0) + " ms";
+    };
 
     // Rest needle to 0 dB GR (far right = +60° from vertical)
     needleAngle = needleAngleForGR (0.f);
@@ -192,22 +212,43 @@ void Couch1176Editor::timerCallback()
 // ─────────────────────────────────────────────────────────────────────────────
 // Needle angle helpers  (clock-face: 0 = 12 o'clock, CW positive)
 // tipX = pivotX + sin(angle)*R,  tipY = pivotY - cos(angle)*R
-// Sweep: ±60° (±π/3) from vertical
-//   0 dB GR → full right →  +π/3
-//  20 dB GR → full left  →  -π/3
+//
+// Scale landmarks measured from the needleless-vu.png image:
+//   -20 dB  →  -53°  =  -0.9250 rad  (far left)
+//     0 VU  →   +3°  =  +0.0524 rad  (black/red boundary)
+//    +3 VU  →  +25°  =  +0.4363 rad  (far right, red zone)
+//
+// GR mode:   0 dB GR (no compression) → 0 VU mark (+3°)
+//           20 dB GR (heavy)          → -20 mark  (-53°)
+// Output:  -20 dBFS shifted → -20 mark (-53°)
+//            0 dBFS shifted →  0 VU   (+3°)
+//           +3 dBFS shifted → +3 VU   (+25°)
 // ─────────────────────────────────────────────────────────────────────────────
+
+static constexpr float kAngle_minus20 = -1.0036f;   // -57.5° — far left (-20 dB)
+static constexpr float kAngle_zero_VU =  0.3431f;   // +19.7° — 0 VU mark (black/red boundary)
+static constexpr float kAngle_plus3VU =  0.6656f;   // +38.1° — +3 VU mark (far right red)
 
 float Couch1176Editor::needleAngleForGR (float grDb) const noexcept
 {
-    const float norm  = juce::jlimit (0.f, 1.f, grDb / 20.f);  // 0=right, 1=left
-    return juce::MathConstants<float>::pi / 3.f * (1.f - 2.f * norm);
+    // 0 dB GR → 0 VU mark,  20 dB GR → -20 mark
+    const float norm = juce::jlimit (0.f, 1.f, grDb / 20.f);
+    return kAngle_zero_VU + norm * (kAngle_minus20 - kAngle_zero_VU);
 }
 
 float Couch1176Editor::needleAngleForOut (float shiftedDbFS) const noexcept
 {
-    // Map: 0 dBFS (shifted) → full right, −20 dBFS → full left
-    const float norm = juce::jlimit (0.f, 1.f, (0.f - shiftedDbFS) / 20.f);
-    return juce::MathConstants<float>::pi / 3.f * (1.f - 2.f * norm);
+    // -20 dBFS → -20 mark,  0 dBFS → 0 VU,  +3 dBFS → +3 VU mark
+    const float clamped = juce::jlimit (-20.f, 3.f, shiftedDbFS);
+    if (clamped >= 0.f)
+    {
+        // 0 → +3 dBFS maps to 0 VU → +3 VU
+        const float t = clamped / 3.f;
+        return kAngle_zero_VU + t * (kAngle_plus3VU - kAngle_zero_VU);
+    }
+    // -20 → 0 dBFS maps to -20 mark → 0 VU
+    const float t = (clamped + 20.f) / 20.f;
+    return kAngle_minus20 + t * (kAngle_zero_VU - kAngle_minus20);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -284,39 +325,20 @@ void Couch1176Editor::paint (juce::Graphics& g)
     drawBackground       (g);
     drawKnobLabels       (g);
 
-    // Draw dial scales for large knobs (INPUT, OUTPUT) in editor space
-    drawKnobDialScale (g,
-        INP_X + INP_W * 0.5f, INP_Y + INP_H * 0.5f,
-        INP_W * 0.5f - 2.f,   // inner radius (just outside knob chrome)
-        INP_W * 0.5f + 9.f,   // outer radius
-        INP_W * 0.5f + 16.f,  // label radius
-        11, true);
+    // Draw dial scales for large knobs (INPUT, OUTPUT)
+    // Radii are fixed (not knob-relative) so the marks don't grow with the larger knob
+    const float largeInnerR = 42.f, largeOuterR = 53.f, largeLabelR = 60.f;
+    juce::ignoreUnused (largeInnerR, largeOuterR, largeLabelR);
 
-    drawKnobDialScale (g,
-        OUT_X + OUT_W * 0.5f, OUT_Y + OUT_H * 0.5f,
-        OUT_W * 0.5f - 2.f,
-        OUT_W * 0.5f + 9.f,
-        OUT_W * 0.5f + 16.f,
-        11, true);
+    drawLargeKnobScale (g, INP_X + INP_W * 0.5f, INP_Y + INP_H * 0.5f);
+    drawLargeKnobScale (g, OUT_X + OUT_W * 0.5f, OUT_Y + OUT_H * 0.5f);
 
     // Smaller dial scales for ATTACK, RELEASE
-    drawKnobDialScale (g,
-        ATK_X + ATK_W * 0.5f, ATK_Y + ATK_H * 0.5f,
-        ATK_W * 0.5f - 2.f,
-        ATK_W * 0.5f + 7.f,
-        ATK_W * 0.5f + 14.f,
-        11, false);
-
-    drawKnobDialScale (g,
-        REL_X + REL_W * 0.5f, REL_Y + REL_H * 0.5f,
-        REL_W * 0.5f - 2.f,
-        REL_W * 0.5f + 7.f,
-        REL_W * 0.5f + 14.f,
-        11, false);
+    drawSmallKnobScale (g, ATK_X + ATK_W * 0.5f, ATK_Y + ATK_H * 0.5f);
+    drawSmallKnobScale (g, REL_X + REL_W * 0.5f, REL_Y + REL_H * 0.5f);
 
     drawRatioButtons     (g);
     drawVUMeterFace      (g);
-    drawVUNeedle         (g);
     drawMeterModeButtons (g);
     drawBranding         (g);
     drawBottomBar        (g);
@@ -347,49 +369,116 @@ void Couch1176Editor::drawBackground (juce::Graphics& g) const
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Dial scale  (drawn in editor paint space around a knob center)
-// Uses JUCE clock-face convention:  tipX = cx + sin(a)*r,  tipY = cy - cos(a)*r
+// Large knob scale  (INPUT / OUTPUT)
+// Labels: ∞  48  36  30  24  18  12  6  0  (9 positions, CW from min)
+// One small inter-dot between each adjacent pair of labeled positions.
 // ─────────────────────────────────────────────────────────────────────────────
 
-void Couch1176Editor::drawKnobDialScale (juce::Graphics& g,
-                                          float cx, float cy,
-                                          float innerR, float outerR, float labelR,
-                                          int   nTicks, bool large) const
+void Couch1176Editor::drawLargeKnobScale (juce::Graphics& g, float cx, float cy) const
 {
-    // Match the slider's rotary params (set in constructor)
     const float startAngle = juce::MathConstants<float>::pi * 1.25f;
-    const float endAngle   = juce::MathConstants<float>::pi * 2.75f;
+    const float sweep      = juce::MathConstants<float>::pi * 1.5f;
 
-    g.setFont (juce::Font ("Arial", large ? 8.f : 7.f, juce::Font::plain));
+    // Radii fixed regardless of knob image size
+    // Knob body edge measured at 44px for 138px display size
+    const float dotR   = 47.f;
+    const float labelR = 59.f;
 
-    for (int i = 0; i < nTicks; ++i)
+    struct Mark { float t; const char* label; };
+    const Mark marks[] = {
+        { 0.f/8.f, "\xe2\x88\x9e" },   // ∞
+        { 1.f/8.f, "48" },
+        { 2.f/8.f, "36" },
+        { 3.f/8.f, "30" },
+        { 4.f/8.f, "24" },
+        { 5.f/8.f, "18" },
+        { 6.f/8.f, "12" },
+        { 7.f/8.f, "6"  },
+        { 8.f/8.f, "0"  },
+    };
+
+    g.setFont (juce::Font ("Arial", 8.5f, juce::Font::plain));
+
+    // One inter-dot between each labeled pair
+    for (int i = 0; i < 8; ++i)
     {
-        const float t     = static_cast<float> (i) / static_cast<float> (nTicks - 1);
-        const float angle = startAngle + t * (endAngle - startAngle);
+        const float t  = (marks[i].t + marks[i + 1].t) * 0.5f;
+        const float a  = startAngle + t * sweep;
+        const float dx = cx + std::sin (a) * dotR;
+        const float dy = cy - std::cos (a) * dotR;
+        g.setColour (Col::silver.withAlpha (0.35f));
+        g.fillEllipse (dx - 1.2f, dy - 1.2f, 2.4f, 2.4f);
+    }
 
-        const float sa = std::sin (angle);
-        const float ca = std::cos (angle);
+    // Main labeled dots + numbers
+    for (const auto& m : marks)
+    {
+        const float a  = startAngle + m.t * sweep;
+        const float sa = std::sin (a);
+        const float ca = std::cos (a);
 
-        const bool isMajor = (i == 0 || i == (nTicks - 1) / 2 || i == nTicks - 1);
-        const float r1 = isMajor ? innerR : innerR + (outerR - innerR) * 0.25f;
+        const float dx = cx + sa * dotR;
+        const float dy = cy - ca * dotR;
+        g.setColour (Col::silver);
+        g.fillEllipse (dx - 1.8f, dy - 1.8f, 3.6f, 3.6f);
 
-        // Tick
-        g.setColour (isMajor ? Col::silver : Col::silver.withAlpha (0.5f));
-        g.drawLine (cx + sa * r1,     cy - ca * r1,
-                    cx + sa * outerR, cy - ca * outerR,
-                    isMajor ? 1.5f : 0.8f);
+        const float lx = cx + sa * labelR;
+        const float ly = cy - ca * labelR;
+        g.setColour (Col::silver.withAlpha (0.85f));
+        g.drawText (m.label,
+                    juce::Rectangle<float> (lx - 12.f, ly - 7.f, 24.f, 14.f),
+                    juce::Justification::centred);
+    }
+}
 
-        // Number at major ticks
-        if (isMajor)
+// ─────────────────────────────────────────────────────────────────────────────
+// Small knob scale  (ATTACK / RELEASE)
+// Positions: OFF  1  2  3  4  5  6  7  (8 positions, CW from min)
+// Labels shown for: OFF, 1, 3, 5, 7  —  2, 4, 6 are dots only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Couch1176Editor::drawSmallKnobScale (juce::Graphics& g, float cx, float cy) const
+{
+    const float startAngle = juce::MathConstants<float>::pi * 1.25f;
+    const float sweep      = juce::MathConstants<float>::pi * 1.5f;
+
+    const float dotR   = 22.f;
+    const float labelR = 33.f;
+
+    struct Mark { float t; const char* label; };   // label=nullptr → dot only
+    const Mark marks[] = {
+        { 0.f/6.f, "1"   },
+        { 1.f/6.f, nullptr },   // 2
+        { 2.f/6.f, "3"   },
+        { 3.f/6.f, nullptr },   // 4
+        { 4.f/6.f, "5"   },
+        { 5.f/6.f, nullptr },   // 6
+        { 6.f/6.f, "7"   },
+    };
+
+    g.setFont (juce::Font ("Arial", 7.5f, juce::Font::plain));
+
+    for (const auto& m : marks)
+    {
+        const float a  = startAngle + m.t * sweep;
+        const float sa = std::sin (a);
+        const float ca = std::cos (a);
+
+        const bool hasLabel = (m.label != nullptr);
+        const float r = hasLabel ? 1.8f : 1.3f;
+
+        const float dx = cx + sa * dotR;
+        const float dy = cy - ca * dotR;
+        g.setColour (hasLabel ? Col::silver : Col::silver.withAlpha (0.45f));
+        g.fillEllipse (dx - r, dy - r, r * 2.f, r * 2.f);
+
+        if (hasLabel)
         {
-            const juce::String label = (i == 0) ? "0"
-                                     : (i == (nTicks - 1) / 2) ? "5"
-                                     : "10";
-            g.setColour (Col::dimCream);
             const float lx = cx + sa * labelR;
             const float ly = cy - ca * labelR;
-            g.drawText (label,
-                        juce::Rectangle<float> (lx - 8.f, ly - 6.f, 16.f, 12.f),
+            g.setColour (Col::silver.withAlpha (0.85f));
+            g.drawText (m.label,
+                        juce::Rectangle<float> (lx - 12.f, ly - 6.f, 24.f, 12.f),
                         juce::Justification::centred);
         }
     }
@@ -403,10 +492,10 @@ void Couch1176Editor::drawKnobLabels (juce::Graphics& g) const
 {
     struct L { int x, y, w; const char* text; bool large; };
     const L specs[] = {
-        { INP_X, INP_Y + INP_H + 18, INP_W, "INPUT",   true  },
-        { OUT_X, OUT_Y + OUT_H + 18, OUT_W, "OUTPUT",  true  },
-        { ATK_X, ATK_Y - 14,         ATK_W, "ATTACK",  false },
-        { REL_X, REL_Y - 14,         REL_W, "RELEASE", false },
+        { INP_X, INP_Y + INP_H + 14, INP_W, "INPUT",   true  },
+        { OUT_X, OUT_Y + OUT_H + 14, OUT_W, "OUTPUT",  true  },
+        { ATK_X, ATK_Y - 13,         ATK_W, "ATTACK",  false },
+        { REL_X, REL_Y + REL_H + 4,  REL_W, "RELEASE", false },  // below knob
     };
 
     for (const auto& s : specs)
@@ -415,14 +504,6 @@ void Couch1176Editor::drawKnobLabels (juce::Graphics& g) const
         g.setColour (Col::cream);
         g.drawText (s.text, s.x, s.y, s.w, 13, juce::Justification::centred);
     }
-
-    // Sub-labels
-    g.setFont (juce::Font ("Arial", 7.f, juce::Font::plain));
-    g.setColour (Col::dimCream);
-    g.drawText ("CW = \xe2\x86\x91",
-                ATK_X, ATK_Y + ATK_H + 2, ATK_W, 10, juce::Justification::centred);
-    g.drawText ("CW = \xe2\x86\x91",
-                REL_X, REL_Y + REL_H + 2, REL_W, 10, juce::Justification::centred);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -434,99 +515,41 @@ void Couch1176Editor::drawVUMeterFace (juce::Graphics& g) const
     const juce::Rectangle<float> face ((float) VM_X, (float) VM_Y,
                                        (float) VM_W, (float) VM_H);
 
-    // ── Outer chrome bezel ─────────────────────────────────────────────────
-    g.setColour (Col::meterBezel);
-    g.fillRoundedRectangle (face.expanded (5.f), 6.f);
-    g.setColour (Col::chromeDark);
-    g.fillRoundedRectangle (face.expanded (2.f), 4.f);
+    // ── Black background behind sprite (no bezel) ──────────────────────────
+    g.setColour (juce::Colours::black);
+    g.fillRect (face);
 
-    // ── Amber meter face ───────────────────────────────────────────────────
-    juce::ColourGradient faceGrad (juce::Colour (0xfff8e850), face.getCentreX(), face.getY(),
-                                   juce::Colour (0xffd4a800), face.getCentreX(), face.getBottom(),
-                                   false);
-    g.setGradientFill (faceGrad);
-    g.fillRoundedRectangle (face, 3.f);
+    // ── Sprite sheet frame selection ───────────────────────────────────────
+    // 121 frames: frame 0 = −60° (20 dB GR, left), frame 120 = +60° (0 dB GR, right)
+    static const juce::Image sprite = juce::ImageCache::getFromMemory (
+                                          BinaryData::vu_sprite_png,
+                                          BinaryData::vu_sprite_pngSize);
 
-    // Amber back-light glow overlay
-    g.setColour (juce::Colour (0x28ffcc00));
-    g.fillRoundedRectangle (face, 3.f);
-
-    // ── Scale arc tick marks and labels ────────────────────────────────────
-    // Pivot in component space
-    const float px = VM_PX;
-    const float py = VM_PY;
-
-    // GR positions: -20 dB (left, -60°) … 0 dB (right, +60°)
-    // Clock-face angle: a = π/3 * (1 - 2*norm), norm = grDb/20
-    // tipX = px + sin(a)*R,  tipY = py - cos(a)*R
-    struct Tick { float grDb; const char* label; bool major; };
-    const Tick ticks[] = {
-        { 20.f, "20", true  },
-        { 14.f, "14", true  },
-        { 10.f, "10", true  },
-        {  7.f, "7",  false },
-        {  5.f, "5",  true  },
-        {  3.f, "3",  false },
-        {  2.f, "2",  false },
-        {  1.f, "1",  false },
-        {  0.f, "0",  true  },
-    };
-
-    for (const auto& t : ticks)
+    if (sprite.isValid())
     {
-        const float norm  = t.grDb / 20.f;
-        const float angle = juce::MathConstants<float>::pi / 3.f * (1.f - 2.f * norm);
-        const float sa    = std::sin (angle);
-        const float ca    = std::cos (angle);
+        // Sprite frame dimensions are fixed at generation time (184×158)
+        constexpr int   SPRITE_FRAME_W = 184;
+        constexpr int   SPRITE_FRAME_H = 158;
+        constexpr int   TOTAL_FRAMES   = 121;
+        constexpr float SWEEP          = juce::MathConstants<float>::pi / 3.f;
 
-        const float r1 = t.major ? SCALE_R_IN - 3.f : SCALE_R_IN + 2.f;
+        const float clampedAngle = juce::jlimit (-SWEEP, SWEEP, needleAngle);
+        const float t            = (clampedAngle + SWEEP) / (2.f * SWEEP);
+        const int   frameIdx     = juce::roundToInt (t * (TOTAL_FRAMES - 1));
 
-        // Tick (dark brown, printed-look)
-        g.setColour (t.major ? Col::meterPrint : Col::meterPrint.withAlpha (0.65f));
-        g.drawLine (px + sa * r1,          py - ca * r1,
-                    px + sa * SCALE_R_OUT, py - ca * SCALE_R_OUT,
-                    t.major ? 1.6f : 0.9f);
-
-        // Label at major ticks
-        if (t.major)
-        {
-            const float lx = px + sa * LABEL_R;
-            const float ly = py - ca * LABEL_R;
-            g.setFont  (juce::Font ("Arial", 8.f, juce::Font::bold));
-            g.setColour (Col::meterPrint);
-            g.drawText (t.label,
-                        juce::Rectangle<float> (lx - 9.f, ly - 6.f, 18.f, 12.f),
-                        juce::Justification::centred);
-        }
+        const int srcX = frameIdx * SPRITE_FRAME_W;
+        g.drawImage (sprite,
+                     (int) face.getX(), (int) face.getY(), VM_W, VM_H,
+                     srcX, 0, SPRITE_FRAME_W, SPRITE_FRAME_H);
     }
 
-    // Thin arc baseline along scale
-    juce::Path arc;
-    for (int i = 0; i <= 60; ++i)
-    {
-        const float f  = i / 60.f;
-        const float a  = juce::MathConstants<float>::pi / 3.f * (1.f - 2.f * f);
-        const float ax = px + std::sin (a) * SCALE_R_OUT;
-        const float ay = py - std::cos (a) * SCALE_R_OUT;
-        if (i == 0) arc.startNewSubPath (ax, ay);
-        else        arc.lineTo (ax, ay);
-    }
-    g.setColour (Col::meterPrint.withAlpha (0.35f));
-    g.strokePath (arc, juce::PathStrokeType (0.6f));
-
-    // Mode label (small, bottom of face)
+    // ── Mode label (small, bottom of face) ────────────────────────────────
     const char* const modeLabels[] = { "GR  dB", "+8 VU OUTPUT", "+4 VU OUTPUT", "OFF" };
     g.setFont (juce::Font ("Arial", 7.5f, juce::Font::bold));
     g.setColour (Col::meterPrint.withAlpha (0.75f));
     g.drawText (modeLabels[meterMode],
                 VM_X, static_cast<int> (VM_PY) + 2, VM_W, 10,
                 juce::Justification::centred);
-
-    // Glass sheen (top half)
-    juce::ColourGradient glassGrad (juce::Colour (0x14ffffff), face.getX(), face.getY(),
-                                    juce::Colour (0x00000000), face.getX(), face.getCentreY(), false);
-    g.setGradientFill (glassGrad);
-    g.fillRoundedRectangle (face.withHeight (face.getHeight() * 0.5f), 3.f);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

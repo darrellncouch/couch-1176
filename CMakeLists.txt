@@ -34,6 +34,14 @@ juce_add_plugin(Couch1176
 
 juce_generate_juce_header(Couch1176)
 
+# ── Binary data (images, etc.) ────────────────────────────────────────────────
+juce_add_binary_data(Couch1176BinaryData SOURCES
+    Assets/76-vu.png
+    Assets/vu_sprite.png
+    Assets/76-large.png
+    Assets/76-small.png
+)
+
 # ── Sources ───────────────────────────────────────────────────────────────────
 target_sources(Couch1176 PRIVATE
     Source/PluginProcessor.cpp
@@ -55,6 +63,7 @@ target_compile_definitions(Couch1176 PUBLIC
 # ── Link libraries ────────────────────────────────────────────────────────────
 target_link_libraries(Couch1176
     PRIVATE
+        Couch1176BinaryData
         juce::juce_audio_utils
         juce::juce_dsp
     PUBLIC
